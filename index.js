@@ -28,6 +28,7 @@ async function run() {
         const menuCollection = client.db("bistroDb").collection("menu");
         const reviewsCollection = client.db("bistroDb").collection("reviews");
         const cartsCollection = client.db("bistroDb").collection("carts");
+        const paymentCollection = client.db("bistroDb").collection("payments");
 
         // jwt related API
         app.post('/jwt', async (req, res) => {
@@ -190,19 +191,80 @@ async function run() {
 
         // payment intent
         app.post('/create-payment-intent', async (req, res) => {
-            const {price} = req.body;
-            const amount = parseInt(price * 100);
+            try {
+                const { price } = req.body;
+                const amount = parseInt(price * 100); // Convert price to cents
 
-            const paymentIntent = await stripe.paymentIntent.create({
-                amount: amount,
-                currency: 'usd',
-                payment_method_types: ['card'],
+                if (isNaN(amount) || amount < 1) {
+                    throw new Error('Invalid amount');
+                }
 
-            });
+                const paymentIntent = await stripe.paymentIntents.create({
+                    amount: amount,
+                    currency: 'usd',
+                    payment_method_types: ['card'],
+                });
+
+                res.send({
+                    clientSecret: paymentIntent.client_secret
+                });
+            } catch (error) {
+                console.error('Error creating payment intent:', error);
+                res.status(400).send({ error: 'Invalid amount' });
+            }
+
+        })
+
+        app.get('/payments/:email', verifyToken, async (req,res) => {
+            const query = {email: req.params.email}
+            if(req.params.email !== req.decoded.email){
+                return res.status(403).send({message: 'Forbidden Access'});
+            }
+            const result = await paymentCollection.find(query).toArray();
+            res.send(result);
+        });
+
+        app.post('/payments', async(req, res) => {
+            const payment = req.body;
+            const paymentResult = await paymentCollection.insertOne(payment)
+
+            // carefully delete each item from the cart
+            console.log('payment ifo', payment);
+            const query = {_id: {
+                $in : payment.cartIds.map(id => new ObjectId(id))
+            }};
+
+            const deleteResult = await cartsCollection.deleteMany(query)
+            res.send({paymentResult, deleteResult})
+        })
+
+        // stats or analytics
+        app.get('/admin-stats', verifyToken, verifyAdmin, async (req, res) => {
+            const users = await userCollection.estimatedDocumentCount();
+            const menuItems = await menuCollection.estimatedDocumentCount();
+            const orders = await paymentCollection.estimatedDocumentCount();
+
+            // this is not the best way to implement revenue stats
+            // const payments = await paymentCollection.find().toArray();
+            // const revenues = parseFloat(payments.reduce((total, payment) => total + payment.price, 0)).toFixed(2)
+            const result = await paymentCollection.aggregate([
+                {
+                    $group: {
+                        _id: null,
+                        totalRevenue: {
+                            $sum: '$price'
+                        }
+                    }
+                }
+            ]).toArray();
+
+            const revenue = result.length > 0 ? parseFloat(result[0].totalRevenue.toFixed(2)) : 0;
             res.send({
-                clientSecret: paymentIntent.client_secret
+                users,
+                menuItems,
+                orders,
+                revenue
             })
-
         })
 
         // Send a ping to confirm a successful connection
