@@ -215,27 +215,29 @@ async function run() {
 
         })
 
-        app.get('/payments/:email', verifyToken, async (req,res) => {
-            const query = {email: req.params.email}
-            if(req.params.email !== req.decoded.email){
-                return res.status(403).send({message: 'Forbidden Access'});
+        app.get('/payments/:email', verifyToken, async (req, res) => {
+            const query = { email: req.params.email }
+            if (req.params.email !== req.decoded.email) {
+                return res.status(403).send({ message: 'Forbidden Access' });
             }
             const result = await paymentCollection.find(query).toArray();
             res.send(result);
         });
 
-        app.post('/payments', async(req, res) => {
+        app.post('/payments', async (req, res) => {
             const payment = req.body;
             const paymentResult = await paymentCollection.insertOne(payment)
 
             // carefully delete each item from the cart
             console.log('payment ifo', payment);
-            const query = {_id: {
-                $in : payment.cartIds.map(id => new ObjectId(id))
-            }};
+            const query = {
+                _id: {
+                    $in: payment.cartIds.map(id => new ObjectId(id))
+                }
+            };
 
             const deleteResult = await cartsCollection.deleteMany(query)
-            res.send({paymentResult, deleteResult})
+            res.send({ paymentResult, deleteResult })
         })
 
         // stats or analytics
@@ -259,12 +261,58 @@ async function run() {
             ]).toArray();
 
             const revenue = result.length > 0 ? parseFloat(result[0].totalRevenue.toFixed(2)) : 0;
+            console.log(users, revenue);
             res.send({
                 users,
                 menuItems,
                 orders,
                 revenue
             })
+        })
+
+        // using aggregate pipeline for admin home
+        app.get('/order-stats', async (req, res) => {
+            const result = await paymentCollection.aggregate([
+                {
+                    $unwind: '$menuItemIds'
+                },
+                {
+                    $lookup: {
+                        from: 'menu',
+                        let: { menuItemId: { $toObjectId: '$menuItemIds' } }, // Convert string to ObjectId
+                        pipeline: [
+                            {
+                                $match: {
+                                    $expr: {
+                                        $eq: ['$_id', '$$menuItemId']
+                                    }
+                                }
+                            }
+                        ],
+                        as: 'menuItems'
+                    }
+                },
+                {
+                    $unwind: '$menuItems'
+                },
+                {
+                    $group: {
+                        _id: '$menuItems.category',
+                        quantity: { $sum: 1 },
+                        revenue: { $sum: '$menuItems.price' }
+                    }
+                },
+                {
+                    $project: {
+                        _id: 0,
+                        category: '$_id',
+                        quantity: '$quantity',
+                        revenue: '$revenue'
+                    }
+                }
+            ]).toArray();
+
+            res.send(result);
         })
 
         // Send a ping to confirm a successful connection
